@@ -167,6 +167,7 @@ add_library(dgpp_kernels STATIC
   src/kernels/glm_mhc.cu
   src/kernels/glm_moe.cu
   src/kernels/glm_vision.cu
+  src/kernels/qwen_vision.cu
   src/kernels/glm_norm.cu
   src/kernels/pick.cu
   src/kernels/sample_pick.cu
@@ -350,9 +351,10 @@ dgpp_set_common(dgpp_models_qwen)
 # The Qwen resident loader (Q2): the shared weight builder at the family's
 # TP geometry, plus the n-gram table's own residency.
 add_library(dgpp_models_qwen_loader STATIC
+  src/models/qwen/vision.cpp
   src/models/qwen/loader.cpp)
 target_include_directories(dgpp_models_qwen_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(dgpp_models_qwen_loader PUBLIC dgpp_models_qwen dgpp_loaders CUDA::cudart dgpp_device_ranges)
+target_link_libraries(dgpp_models_qwen_loader PUBLIC dgpp_models_qwen dgpp_loaders dgpp_kernels CUDA::cudart dgpp_device_ranges)
 dgpp_set_common(dgpp_models_qwen_loader)
 
 # The Qwen layers (Q3): the MoE on the shared MoE layer, with its oracle.
@@ -696,7 +698,7 @@ set_tests_properties(glm_dsa_chat_template_test PROPERTIES SKIP_RETURN_CODE 2)
 # journal (fabric_serve.cpp over the host-only dgpp_net TCP primitives).
 add_library(dgpp_serve STATIC
   src/serve/image_inputs.cpp
-  src/serve/glm_vision_frontend.cpp
+  src/serve/vision_frontend.cpp
   src/serve/file_inputs.cpp
   src/serve/cluster_config.cpp
   src/serve/http_server.cpp
@@ -1160,6 +1162,15 @@ add_test(NAME qwen_engine_mtp3_rows64_row_independent
 set_tests_properties(qwen_engine_fp8_mtp3_rows64 qwen_engine_mtp3_rows64_row_independent
   PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
 
+foreach(compact_candidates IN ITEMS 1 32)
+  add_test(NAME qwen_engine_compact_sampling_${compact_candidates}
+    COMMAND ${CMAKE_COMMAND} -E env DGPP_DENSE_GEMV_ROWS=256 DGPP_COMPACT_BATCH=1
+            DGPP_TEST_FILTER=wide DGPP_TEST_COMPACT_SAMPLING=${compact_candidates}
+            $<TARGET_FILE:qwen_engine_test>)
+  set_tests_properties(qwen_engine_compact_sampling_${compact_candidates}
+    PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
+endforeach()
+
 add_executable(qwen_forward_check apps/qwen_forward_check.cpp)
 target_link_libraries(qwen_forward_check PRIVATE dgpp_models_qwen_layers dgpp_bus dgpp_loaders CUDA::cudart Threads::Threads)
 dgpp_set_common(qwen_forward_check)
@@ -1447,6 +1458,10 @@ set_tests_properties(roster_selftest PROPERTIES LABELS "host")
 add_executable(glm_vision_check apps/glm_vision_check.cpp)
 target_link_libraries(glm_vision_check PRIVATE dgpp_models_glm_loader CUDA::cudart)
 dgpp_set_common(glm_vision_check)
+
+add_executable(qwen_vision_check apps/qwen_vision_check.cpp)
+target_link_libraries(qwen_vision_check PRIVATE dgpp_models_qwen_loader CUDA::cudart)
+dgpp_set_common(qwen_vision_check)
 
 add_executable(glm_vision_test tests/cuda/glm_vision_test.cpp)
 target_link_libraries(glm_vision_test PRIVATE dgpp_kernels CUDA::cudart)

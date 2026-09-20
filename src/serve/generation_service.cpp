@@ -1201,10 +1201,26 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
         Member alias = m;
         alias.key = "enable_thinking";
         extra.push_back(alias);
+      } else if (m.key == "preserve_thinking") {
+        // Qwen3.8-Flash-Next's template reads it (the golden corpus's
+        // multi_turn_preserve_thinking_false case): false keeps the
+        // reasoning blocks only on the assistant turns after the last user
+        // query, so a multi-turn request ships without the history's
+        // thinking. A pure pass-through: the template decides what the flag
+        // means, the service only refuses it where no template reads it
+        // (GLM-5.3-Flash's and DeepSeek-V4.1's carry no such switch, so
+        // their history keeps whatever reasoning_content the client sent).
+        if (!frontend_->template_reads("preserve_thinking"))
+          return refuse(
+              "this template has no preserve_thinking knob (it renders the "
+              "reasoning_content of every history turn it is given)",
+              where, "unsupported_parameter");
+        if (!m.value.is_bool()) return refuse(where + " must be a boolean", where);
+        extra.push_back(m);
       } else {
         return refuse(where + " is not a knob of this template (it reads "
-                      "enable_thinking / thinking, clear_thinking and "
-                      "reasoning_effort)",
+                      "enable_thinking / thinking, clear_thinking, "
+                      "preserve_thinking and reasoning_effort)",
                       where, "unsupported_parameter");
       }
     }

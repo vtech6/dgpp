@@ -437,8 +437,12 @@ class FakeFrontend : public ModelFrontend {
   // fake, like GLM-5.3-Flash's template, does not.
   std::atomic<bool> reads_enable_thinking{false};
   std::atomic<bool> reads_reasoning_effort{true};
+  // Qwen3.8-Flash-Next's template reads preserve_thinking (it drops the
+  // history's reasoning blocks when false); GLM-5.3-Flash's does not.
+  std::atomic<bool> reads_preserve_thinking{false};
   bool template_reads(std::string_view name) const override {
-    return (name == "reasoning_effort" && reads_reasoning_effort) || (name == "enable_thinking" && reads_enable_thinking);
+    return (name == "reasoning_effort" && reads_reasoning_effort) || (name == "enable_thinking" && reads_enable_thinking) ||
+           (name == "preserve_thinking" && reads_preserve_thinking);
   }
 
   std::vector<int64_t> encode_text(std::string_view text) const override {
@@ -1755,6 +1759,8 @@ DGPP_TEST(serve_tools_requestSideRendersThroughTheTemplateAndRefusesByName) {
           "\"param\":\"reasoning_effort\"");
   refused(chat_body("abcd", 2, ",\"chat_template_kwargs\":{\"enable_thinking\":false}"),
           "\"param\":\"chat_template_kwargs.enable_thinking\"");
+  refused(chat_body("abcd", 2, ",\"chat_template_kwargs\":{\"preserve_thinking\":false}"),
+          "\"param\":\"chat_template_kwargs.preserve_thinking\"");
   refused(chat_body("abcd", 2, ",\"chat_template_kwargs\":{\"foo\":1}"),
           "\"param\":\"chat_template_kwargs.foo\"");
   refused(chat_body("abcd", 2,
@@ -1789,6 +1795,28 @@ DGPP_TEST(serve_enableThinkingIsAcceptedOnlyWhenTheTemplateReadsIt) {
           "enable_thinking reaches the render globals: " + g);
   const std::string bad = post_chat(rig, chat_body("abcd", 2, ",\"chat_template_kwargs\":{\"enable_thinking\":\"no\"}"));
   require(bad.find("must be a boolean") != std::string::npos, "a non-boolean enable_thinking is refused: " + bad);
+}
+
+DGPP_TEST(serve_preserveThinkingIsPassedToTheTemplatesThatReadIt) {
+  // Qwen3.8-Flash-Next's template reads preserve_thinking (false keeps the
+  // reasoning blocks of the assistant turns after the last user query only):
+  // the service passes it through as a boolean global and otherwise renders
+  // the request unchanged. A template with no such knob refuses it (the
+  // case above), and a non-boolean is a type error rather than a silent
+  // truthiness read.
+  ServiceRig rig;
+  rig.frontend.reads_preserve_thinking = true;
+  const std::string ok = post_until_usage(
+      rig, chat_body("abcd", 2,
+                     ",\"chat_template_kwargs\":{\"preserve_thinking\":false}"));
+  require(ok.find("\"object\":\"chat.completion\"") != std::string::npos,
+          "preserve_thinking accepted by a template that reads it: " + ok.substr(0, 300));
+  require(rig.frontend.last_globals().find("\"preserve_thinking\":false") != std::string::npos,
+          "preserve_thinking reaches the render globals: " + rig.frontend.last_globals());
+  const std::string bad = post_chat(
+      rig, chat_body("abcd", 2, ",\"chat_template_kwargs\":{\"preserve_thinking\":\"no\"}"));
+  require(bad.find("must be a boolean") != std::string::npos,
+          "a non-boolean preserve_thinking is refused: " + bad);
 }
 
 DGPP_TEST(serve_toolCalls_oneShotMessageShapeAndFinishReason) {

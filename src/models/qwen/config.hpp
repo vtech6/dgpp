@@ -6,10 +6,12 @@
 // supported value or rejected with a message naming the field, at load
 // time. The reference is transformers' modular_qwen4_exp.py (5.8).
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "loaders/minijson.hpp"
+#include "models/qwen/vision_config.hpp"
 
 namespace dgpp {
 
@@ -102,6 +104,17 @@ struct QwenTextConfig {
   // layer's experts stay FP8 block-128, the n-gram table FP8 as before.
   bool experts_nvfp4 = false;
   bool ngram_table_fp8 = true;
+
+  // --- vision (docs/vision.md) --------------------------------------------
+  // The multimodal release's tower, parsed from the root config's
+  // vision_config plus its three image token ids. Absent for a
+  // language_model_only export, and the served model is text-only then:
+  // image content is refused at request validation, and /v1/models reports
+  // the modality list accordingly. from_json_file fills this; parse() on a
+  // bare text_config cannot see it.
+  std::optional<QwenVisionConfig> vision;
+  // The prompt's image delimiters; an unset triple for a text-only export.
+  ImageTokens image_tokens() const { return vision ? vision->tokens : ImageTokens{}; }
 
   static QwenTextConfig parse(const minijson::Value& text_config,
                               const minijson::Value* quantization_config);
