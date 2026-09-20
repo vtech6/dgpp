@@ -92,6 +92,22 @@ class FakeEngine : public SchedulerEngine {
   }
   MtpAcceptance mtp_acceptance() const override { return mtp_counters(mtp_fixture.load()); }
 
+
+  std::atomic<bool> report_decode_batch{false};
+  DecodeBatchStats decode_batch_stats() const override {
+    if (!report_decode_batch) return {};
+    DecodeBatchStats stats;
+    stats.slots = 6;
+    stats.active = 5;
+    stats.rows_per_request = 2;
+    stats.replays = 3;
+    stats.rows = 29;
+    stats.padded_rows = 2;
+    stats.replays_by_slots[1] = 1;
+    stats.replays_by_slots[6] = 1;
+    stats.replays_by_slots[16] = 1;
+    return stats;
+  }
   std::atomic<bool> images_available{false};
   std::atomic<int> image_prefills{0};
   bool supports_images() const override { return images_available; }
@@ -1056,6 +1072,44 @@ DGPP_TEST(serve_specDecodeMetrics_countVariableDepthAndReset) {
               "draft tokens count actual attempts, not rounds times maximum depth");
       require(spec.at("num_accepted_tokens_total").as_int() == test.accepted,
               "accepted draft tokens");
+    }
+  }
+}
+
+DGPP_TEST(serve_decodeBatchMetrics_retainsLastLaunchWhileIdle) {
+  ServiceRig rig;
+  for (const bool reported : {false, true}) {
+    rig.engine.report_decode_batch = reported;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (rig.service.meters().decode_batch.replays != (reported ? 3 : 0) &&
+           std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    require(rig.service.meters().decode_batch.replays == (reported ? 3 : 0),
+            "engine telemetry reaches the published snapshot");
+    for (const char* path : {"/metrics", "/v1/metrics"}) {
+      Client client(rig.port());
+      client.send_all(std::string("GET ") + path + " HTTP/1.1\r\nHost: t\r\n\r\n");
+      const auto response = client.read_available(800);
+      const auto parsed =
+          dgpp::minijson::parse(std::string_view(response).substr(response.find("\r\n\r\n") + 4));
+      const auto& scheduler = parsed.root.at("scheduler");
+      require(scheduler.at("active").as_int() == 0 && scheduler.at("queued").as_int() == 0,
+              "last launch does not imply current occupancy");
+      const auto& batch = scheduler.at("decode_batch");
+      for (const auto& [key, value] :
+           std::vector<std::pair<std::string, int>>{{"last_slots", 6},
+                                                    {"last_active", 5},
+                                                    {"last_rows_per_request", 2},
+                                                    {"replays", 3},
+                                                    {"rows", 29},
+                                                    {"padded_rows", 2}})
+        require(batch.at(key).as_int() == (reported ? value : 0), "decode batch " + key);
+      const auto& histogram = batch.at("replays_by_slots");
+      require(histogram.members().size() == 16, "all slot buckets are exposed");
+      for (int slots = 1; slots <= 16; ++slots)
+        require(histogram.at(std::to_string(slots)).as_int() ==
+                    (reported && (slots == 1 || slots == 6 || slots == 16) ? 1 : 0),
+                "scalar, batched and zero histogram buckets");
     }
   }
 }
